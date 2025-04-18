@@ -4,50 +4,108 @@ canvas.height = window.innerHeight;
 
 let ctx = canvas.getContext("2d");
 let x, y, mouseDown = false;
-let signalingSocket = io.connect();
+let currentTool = "pen";
+let startX, startY;
 
-// Store multiple peer connections
+let color = document.getElementById("colorPicker").value;
+let penSize = document.getElementById("penSize").value;
+
+let signalingSocket = io.connect();
 let peerConnections = {};
 let dataChannels = {};
 
-function draw(x, y) {
-    ctx.lineTo(x, y);
-    ctx.stroke();
+document.getElementById("colorPicker").onchange = (e) => {
+    color = e.target.value;
+};
+
+document.getElementById("penSize").oninput = (e) => {
+    penSize = e.target.value;
+};
+
+function setTool(tool) {
+    currentTool = tool;
 }
 
-// Handle mouse events
+function draw(x, y, type = 'pen', remote = false, params = {}) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = penSize;
+    ctx.fillStyle = color;
+
+    if (type === 'pen') {
+        ctx.lineTo(x, y);
+        ctx.stroke();
+    } else {
+        let { startX, startY } = params;
+        ctx.beginPath();
+        switch (type) {
+            case 'line':
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+                break;
+            case 'rect':
+                ctx.strokeRect(startX, startY, x - startX, y - startY);
+                break;
+            case 'circle':
+                let radius = Math.hypot(x - startX, y - startY);
+                ctx.arc(startX, startY, radius, 0, Math.PI * 2);
+                ctx.stroke();
+                break;
+        }
+    }
+
+    if (!remote) {
+        for (let id in dataChannels) {
+            if (dataChannels[id].readyState === 'open') {
+                dataChannels[id].send(JSON.stringify({ x, y, type, startX, startY, color, penSize }));
+            }
+        }
+        signalingSocket.emit('draw', { x, y, type, startX, startY, color, penSize });
+    }
+}
+
 canvas.onmousedown = (e) => {
     x = e.clientX;
     y = e.clientY;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
+    startX = x;
+    startY = y;
     mouseDown = true;
+
+    if (currentTool === 'pen') {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+    }
+
     signalingSocket.emit('down', { x, y });
 };
 
-canvas.onmouseup = () => {
+canvas.onmouseup = (e) => {
     mouseDown = false;
-};
-
-canvas.onmousemove = (e) => {
-    if (mouseDown) {
-        x = e.clientX;
-        y = e.clientY;
-        draw(x, y);
-
-        for (let id in dataChannels) {
-            if (dataChannels[id].readyState === 'open') {
-                dataChannels[id].send(JSON.stringify({ x, y }));
-            }
-        }
-
-        signalingSocket.emit('draw', { x, y });
+    if (currentTool !== 'pen') {
+        draw(e.clientX, e.clientY, currentTool, false, { startX, startY });
     }
 };
 
-// Listen for fallback drawing
+canvas.onmousemove = (e) => {
+    if (mouseDown && currentTool === 'pen') {
+        draw(e.clientX, e.clientY);
+    }
+};
+
 signalingSocket.on("ondraw", (data) => {
-    draw(data.x, data.y);
+    ctx.strokeStyle = data.color;
+    ctx.lineWidth = data.penSize;
+    ctx.fillStyle = data.color;
+
+    if (data.type === 'pen') {
+        ctx.lineTo(data.x, data.y);
+        ctx.stroke();
+    } else {
+        draw(data.x, data.y, data.type, true, {
+            startX: data.startX,
+            startY: data.startY
+        });
+    }
 });
 
 signalingSocket.on("ondown", (data) => {
@@ -55,7 +113,6 @@ signalingSocket.on("ondown", (data) => {
     ctx.moveTo(data.x, data.y);
 });
 
-// Create peer connection with specific socket ID
 function createPeerConnection(id, isInitiator) {
     const peerConnection = new RTCPeerConnection();
 
@@ -85,15 +142,32 @@ function createPeerConnection(id, isInitiator) {
     return peerConnection;
 }
 
-// Set up drawing for received data
 function setupDataChannel(dataChannel, id) {
     dataChannel.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        draw(data.x, data.y);
+        ctx.strokeStyle = data.color;
+        ctx.lineWidth = data.penSize;
+        ctx.fillStyle = data.color;
+
+        draw(data.x, data.y, data.type, true, {
+            startX: data.startX,
+            startY: data.startY
+        });
+    };
+
+    dataChannel.onerror = (error) => {
+        console.error(`Data Channel Error: ${error}`);
+    };
+
+    dataChannel.onopen = () => {
+        console.log("Data channel opened");
+    };
+
+    dataChannel.onclose = () => {
+        console.log("Data channel closed");
     };
 }
 
-// Handle signaling messages
 signalingSocket.on('signal', async (data) => {
     const fromId = data.from;
     if (!peerConnections[fromId]) {
@@ -120,7 +194,6 @@ signalingSocket.on('signal', async (data) => {
     }
 });
 
-// When a new user connects
 signalingSocket.on("user-connected", (id) => {
     const peerConnection = createPeerConnection(id, true);
 
