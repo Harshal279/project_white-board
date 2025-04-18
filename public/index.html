@@ -3,11 +3,112 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>whiteBoardapp</title>
+    <title>WhiteBoard Paint App</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body, html {
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Arial', sans-serif;
+            background-color: #f4f4f4;
+        }
+
+        canvas {
+            display: block;
+            background-color: #fff;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        /* Toolbar Styling */
+        #toolbar {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 10;
+            min-width: 180px;
+        }
+
+        #toolbar input, #toolbar button {
+            padding: 8px;
+            font-size: 14px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        #toolbar button {
+            background-color: #4CAF50;
+            color: white;
+            font-weight: bold;
+        }
+
+        #toolbar button:hover {
+            background-color: #45a049;
+        }
+
+        #toolbar input[type="color"] {
+            border: none;
+            height: 36px;
+        }
+
+        #toolbar input[type="range"] {
+            width: 120px;
+        }
+
+        /* Tooltip for buttons */
+        #toolbar button[title]:hover::after {
+            content: attr(title);
+            position: absolute;
+            bottom: -30px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 5px;
+            border-radius: 4px;
+            font-size: 12px;
+            text-align: center;
+            width: max-content;
+        }
+    </style>
 </head>
 <body>
-    <canvas id = "canvas"></canvas>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.js"></script>
-    <script src ="script.js" ></script>
+    <canvas id="canvas"></canvas>
+
+    <!-- Toolbar for Paint-like UI -->
+    <div id="toolbar">
+        <input type="color" id="colorPicker" value="#000000" title="Choose Color">
+        <input type="range" id="penSize" min="1" max="20" value="2" title="Pen Size">
+        
+        <button onclick="setTool('pen')" title="Pen Tool">Pen</button>
+        <button onclick="setTool('line')" title="Line Tool">Line</button>
+        <button onclick="setTool('rect')" title="Rectangle Tool">Rectangle</button>
+        <button onclick="setTool('circle')" title="Circle Tool">Circle</button>
+
+        <button onclick="clearCanvas()" title="Clear Canvas">Clear</button>
+        <button onclick="undo()" title="Undo">Undo</button>
+        <button onclick="redo()" title="Redo">Redo</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.1/socket.io.js"></script>
+    <script src="script.js"></script>
 </body>
 </html>
