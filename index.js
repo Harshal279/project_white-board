@@ -1,55 +1,38 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+
 const app = express();
-const httpServer = require('http').createServer(app);
-const io = require('socket.io')(httpServer);
+const httpServer = http.createServer(app);
+const io = new Server(httpServer);
 
-let connections = [];
-
-io.on('connection', (socket) => {
-    connections.push(socket);
-    console.log(`${socket.id} has connected`);
-
-    // Notify existing clients about the new user
-    socket.broadcast.emit("user-connected", socket.id);
-
-    socket.on("draw", (data) => {
-        connections.forEach((con) => {
-            if (con.id !== socket.id) {
-                con.emit("ondraw", { x: data.x, y: data.y });
-            }
-        });
-    });
-
-    socket.on("down", (data) => {
-        connections.forEach((con) => {
-            if (con.id !== socket.id) {
-                con.emit("ondown", { x: data.x, y: data.y });
-            }
-        });
-    });
-
-    // WebRTC signaling
-    socket.on('signal', (data) => {
-        const recipientSocket = connections.find((s) => s.id === data.to);
-        if (recipientSocket) {
-            recipientSocket.emit('signal', {
-                ...data,
-                from: socket.id,
-            });
-        }
-    });
-
-    socket.on('disconnect', () => {
-        console.log(`${socket.id} is disconnected`);
-        connections = connections.filter((con) => con.id !== socket.id);
-    });
-});
-
-// Serve static files from public/
+// Serve frontend from "public" directory
 app.use(express.static('public'));
 
-// Use dynamic port for Render compatibility
+// ————————————————— SOCKET.IO —————————————————
+io.on('connection', socket => {
+  console.log(`${socket.id} connected`);
+
+  // Notify other users
+  socket.broadcast.emit('user-connected', socket.id);
+
+  // Fallback drawing events (mouse down & draw)
+  socket.on('down', data => socket.broadcast.emit('ondown', data));
+  socket.on('draw', data => socket.broadcast.emit('ondraw', data));
+
+  // WebRTC signaling
+  socket.on('signal', payload => {
+    io.to(payload.to).emit('signal', { ...payload, from: socket.id });
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`${socket.id} disconnected`);
+    socket.broadcast.emit('peer-disconnected', socket.id);
+  });
+});
+
+// ————————————————— START SERVER —————————————————
 const PORT = process.env.PORT || 8080;
 httpServer.listen(PORT, () => {
-    console.log(`Server started on Port: ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
