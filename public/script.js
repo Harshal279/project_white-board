@@ -1,136 +1,133 @@
-let canvas = document.getElementById('canvas');
-canvas.width = 0.98 * window.innerWidth;
-canvas.height = window.innerHeight;
+/* -------------------- canvas setup -------------------- */
+const canvas = document.getElementById('canvas');
+const ctx     = canvas.getContext('2d');
 
-let ctx = canvas.getContext("2d");
-let x, y, mouseDown = false;
-let signalingSocket = io.connect();
+function resize () {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  ctx.lineWidth = 2;
+  ctx.lineCap   = 'round';
+  ctx.strokeStyle = '#000';
+}
+window.addEventListener('resize', resize);
+resize();
 
-// Store multiple peer connections
-let peerConnections = {};
-let dataChannels = {};
+/* -------------------- sockets -------------------- */
+const socket = io();                // signalling / fallback
 
-function draw(x, y) {
-    ctx.lineTo(x, y);
-    ctx.stroke();
+/* -------------------- WebRTC storage -------------------- */
+const peers        = {};            // socketId ➜ RTCPeerConnection
+const dataChannels = {};            // socketId ➜ RTCDataChannel
+
+function sendStroke(kind, x, y) {
+  const payload = JSON.stringify({ kind, x, y });
+
+  //  WebRTC (fast, p2p)
+  Object.values(dataChannels).forEach(dc => {
+    if (dc.readyState === 'open') dc.send(payload);
+  });
+
+  //  Socket.IO fallback (everyone)
+  socket.emit(kind, { x, y });
 }
 
-// Handle mouse events
-canvas.onmousedown = (e) => {
-    x = e.clientX;
-    y = e.clientY;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    mouseDown = true;
-    signalingSocket.emit('down', { x, y });
-};
-
-canvas.onmouseup = () => {
-    mouseDown = false;
-};
-
-canvas.onmousemove = (e) => {
-    if (mouseDown) {
-        x = e.clientX;
-        y = e.clientY;
-        draw(x, y);
-
-        for (let id in dataChannels) {
-            if (dataChannels[id].readyState === 'open') {
-                dataChannels[id].send(JSON.stringify({ x, y }));
-            }
-        }
-
-        signalingSocket.emit('draw', { x, y });
-    }
-};
-
-// Listen for fallback drawing
-signalingSocket.on("ondraw", (data) => {
-    draw(data.x, data.y);
-});
-
-signalingSocket.on("ondown", (data) => {
-    ctx.beginPath();
-    ctx.moveTo(data.x, data.y);
-});
-
-// Create peer connection with specific socket ID
-function createPeerConnection(id, isInitiator) {
-    const peerConnection = new RTCPeerConnection();
-
-    if (isInitiator) {
-        const dataChannel = peerConnection.createDataChannel("drawData");
-        setupDataChannel(dataChannel, id);
-        dataChannels[id] = dataChannel;
-    } else {
-        peerConnection.ondatachannel = (event) => {
-            const dataChannel = event.channel;
-            setupDataChannel(dataChannel, id);
-            dataChannels[id] = dataChannel;
-        };
-    }
-
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-            signalingSocket.emit("signal", {
-                type: "candidate",
-                candidate: event.candidate,
-                to: id,
-            });
-        }
-    };
-
-    peerConnections[id] = peerConnection;
-    return peerConnection;
+function beginPath(x, y) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
 }
 
-// Set up drawing for received data
-function setupDataChannel(dataChannel, id) {
-    dataChannel.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        draw(data.x, data.y);
-    };
+function addLine(x, y) {
+  ctx.lineTo(x, y);
+  ctx.stroke();
 }
 
-// Handle signaling messages
-signalingSocket.on('signal', async (data) => {
-    const fromId = data.from;
-    if (!peerConnections[fromId]) {
-        createPeerConnection(fromId, false);
-    }
+/* -------------------- local mouse events -------------------- */
+let drawing = false;
 
-    const peerConnection = peerConnections[fromId];
-
-    if (data.type === 'offer') {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        signalingSocket.emit('signal', {
-            type: 'answer',
-            answer,
-            to: fromId
-        });
-    } else if (data.type === 'answer') {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-    } else if (data.type === 'candidate') {
-        if (data.candidate) {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-        }
-    }
+canvas.addEventListener('mousedown', e => {
+  drawing = true;
+  beginPath(e.clientX, e.clientY);
+  sendStroke('down', e.clientX, e.clientY);
 });
 
-// When a new user connects
-signalingSocket.on("user-connected", (id) => {
-    const peerConnection = createPeerConnection(id, true);
+canvas.addEventListener('mouseup', () => drawing = false);
 
-    peerConnection.createOffer()
-        .then(offer => peerConnection.setLocalDescription(offer))
-        .then(() => {
-            signalingSocket.emit("signal", {
-                type: "offer",
-                offer: peerConnection.localDescription,
-                to: id,
-            });
-        });
+let lastEmit = 0;
+canvas.addEventListener('mousemove', e => {
+  if (!drawing) return;
+  const now = Date.now();
+  if (now - lastEmit < 16) return;   // ~60 fps throttle
+
+  addLine(e.clientX, e.clientY);
+  sendStroke('draw', e.clientX, e.clientY);
+  lastEmit = now;
+});
+
+/* -------------------- receive fallback strokes -------------------- */
+socket.on('ondown', data => beginPath(data.x, data.y));
+socket.on('ondraw', data => addLine (data.x, data.y));
+
+/* -------------------- WebRTC helpers -------------------- */
+function makePeer(id, initiator) {
+  if (peers[id]) return peers[id];
+  const pc = new RTCPeerConnection();
+
+  // Data‑channel creation / reception
+  if (initiator) {
+    const dc = pc.createDataChannel('draw');
+    wireDataChannel(id, dc);
+  } else {
+    pc.ondatachannel = e => wireDataChannel(id, e.channel);
+  }
+
+  // ICE
+  pc.onicecandidate = ({candidate}) => {
+    if (candidate) socket.emit('signal', { to:id, type:'candidate', candidate });
+  };
+
+  peers[id] = pc;
+  return pc;
+}
+
+function wireDataChannel(id, dc) {
+  dataChannels[id] = dc;
+  dc.onmessage = e => {
+    const {kind,x,y} = JSON.parse(e.data);
+    if (kind === 'down') beginPath(x, y);
+    else                 addLine (x, y);
+  };
+  dc.onclose = () => delete dataChannels[id];
+}
+
+/* -------------------- signalling -------------------- */
+socket.on('user-connected', async id => {
+  const pc = makePeer(id, true);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit('signal', { to:id, type:'offer', offer });
+});
+
+socket.on('signal', async data => {
+  const {from:id} = data;
+  const pc = makePeer(id, false);
+
+  if (data.type === 'offer') {
+    await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('signal', { to:id, type:'answer', answer });
+
+  } else if (data.type === 'answer') {
+    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+
+  } else if (data.type === 'candidate' && data.candidate) {
+    try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+    catch (e) { console.warn('ICE error', e); }
+  }
+});
+
+socket.on('peer-disconnected', id => {
+  if (peers[id])  peers[id].close();
+  delete peers[id];
+  delete dataChannels[id];
 });
